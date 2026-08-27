@@ -4,14 +4,23 @@ import PrimaryButton from '../components/PrimaryButton';
 export default function PredictionScreen({ navigation, route }) {
 const { asset, prediction } = route.params;
 
-const displayLabel =
-prediction?.label ||
-'Prediction unavailable';
+const CONFIDENCE_THRESHOLD = 0.70;
 
 const confidence =
-typeof prediction?.confidence === 'number'
-? prediction.confidence
-: 0;
+  typeof prediction?.confidence === 'number'
+    ? prediction.confidence
+    : 0;
+
+let displayLabel = prediction?.label || 'Prediction unavailable';
+
+// If confidence is below threshold, treat it as Unknown
+if (
+  prediction &&
+  prediction.label !== 'This is not a silk saree in which the model is trained' &&
+  confidence < CONFIDENCE_THRESHOLD
+) {
+  displayLabel = 'This is not a silk saree in which the model is trained';
+}
 
 return ( <View style={styles.page}>
 <Image

@@ -1,61 +1,136 @@
 # Silk Vision
 
-An Expo React Native application with offline TensorFlow Lite silk classification and an opt-in FastAPI Grad-CAM service.
+An Expo React Native mobile application for offline textile classification using a staged 3-model TensorFlow Lite pipeline, paired with an opt-in FastAPI Grad-CAM explainability service.
 
-## Architecture
+---
+
+## Architecture & Inference Flow
 
 ```text
-Picker / camera image
-        |
-        +--> Skia resize + RGB float conversion --> TFLite model (offline) --> class + confidence
-        |
-        +--> [only after user taps Explain] --> FastAPI --> Keras model + Grad-CAM --> PNG heatmap + overlay
+Picker / Camera Image
+        │
+        ▼
+Single-pass Skia RGB Preprocessing (1 x 224 x 224 x 3 float32 buffer)
+        │
+        ▼
+[Stage 1: Offline TFLite] material_classifier.tflite
+        │
+        ├─────────────────────────────┬─────────────────────────────┐
+        ▼                             ▼                             ▼
+   Silk Branch                   Cotton Branch               Low Confidence
+        │                             │                             │
+[Stage 2: Offline TFLite]     [Stage 2: Offline TFLite]             ▼
+  silk_classifier.tflite        cotton_classifier.tflite      Uncertain Notice
+        │                             │                      (assistive view)
+        ▼                             ▼
+Final Silk Subtype             Final Cotton Subtype
+  (e.g., Banarasi Silk)          (e.g., Khadi)
+        │                             │
+        └──────────────┬──────────────┘
+                       │
+                       ▼
+             Prediction Result Screen
+  (Shows Material Level + Subtype Classification Level)
+                       │
+            [User taps "Generate Grad-CAM"]
+                       │
+                       ▼
+        FastAPI Backend Service (`POST /explain`)
+  (Runs Grad-CAM against matching Keras model: best_silk_stage2.keras / best_cotton_stage1.keras)
+                       │
+                       ▼
+             PNG Heatmap & Overlay URLs
 ```
 
-The local model accepts `1 x 224 x 224 x 3` RGB float32 input and produces five scores. Its class order is Banarasi, Kanchipuram, Paithani, Mysore, and Tussar silk. The Grad-CAM service uses EfficientNetB0's `top_conv`, the last convolutional feature map, because it retains spatial information while remaining closest to the classification head.
+---
 
-## Mobile setup
+## Model Pipeline & Classes
+
+### 1. Material Classifier (`material_classifier.tflite`)
+- **Input**: `1 x 224 x 224 x 3` (float32 RGB).
+- **Output**: 2 classes `[cotton, silk]`.
+- Determines whether the textile fabric is Silk or Cotton.
+
+### 2. Silk Classifier (`silk_classifier.tflite`)
+- **Execution**: Triggered when Stage 1 predicts Silk.
+- **Output**: 6 classes:
+  1. Banarasi Silk (`banarasi_silk`)
+  2. Chanderi Silk (`chanderi_silk`)
+  3. Kanjeevaram Silk (`kanjeevaram_silk`)
+  4. Muga Silk (`muga_silk`)
+  5. Mysore Silk (`mysore_silk`)
+  6. Pochampally Silk (`pochampally_silk`)
+
+### 3. Cotton Classifier (`cotton_classifier.tflite`)
+- **Execution**: Triggered when Stage 1 predicts Cotton.
+- **Output**: 5 classes:
+  1. Cotton (Fabric) (`cotton_fabric`)
+  2. Khadi (`khadi`)
+  3. Ikat (`ikat`)
+  4. Cotton Sarees (`cotton_sarees`)
+  5. Handloom (`handloom`)
+
+---
+
+## Mobile Setup & Development
+
+### Prerequisites
+- Node.js (v18+)
+- Android Studio / Xcode for native development builds (since `react-native-fast-tflite` is a native module)
 
 ```powershell
+# Install dependencies
 npm install
+
+# Generate native project files if needed
 npx expo prebuild --clean
+
+# Run on Android development build
 npx expo run:android
 ```
 
-Use a development build, not Expo Go: `react-native-fast-tflite` is a native module. For a physical phone, set `EXPO_PUBLIC_API_URL` to the LAN address of the backend before starting Expo, for example:
+### Physical Device Backend Connection
+To test Grad-CAM on a physical device, supply your computer's local network IP in `EXPO_PUBLIC_API_URL` prior to starting the Expo development client:
 
 ```powershell
-$env:EXPO_PUBLIC_API_URL='http://192.168.1.10:8000'
+$env:EXPO_PUBLIC_API_URL="http://192.168.1.10:8000"
 npx expo start --dev-client
 ```
 
-Android emulators use the default `http://10.0.2.2:8000`. Rebuild the native app after changing `app.json` or adding native dependencies.
+*Note: Android Emulators automatically resolve to `http://10.0.2.2:8000`.*
 
-## Backend setup and API
+---
 
-Follow [backend/README.md](backend/README.md). `POST /predict` accepts multipart field `file`; `POST /explain` accepts `file` and optional `class_index` from `0` to `4`.
+## Grad-CAM Backend Service
 
-Example prediction response:
+The optional Grad-CAM backend (`backend/`) dynamically dispatches requests to the corresponding Keras models:
+- Silk: `best_silk_stage2.keras`
+- Cotton: `best_cotton_stage1.keras`
 
-```json
-{"class_index":0,"class_name":"banarasi_silk","label":"Banarasi Silk","confidence":0.96,"scores":[0.96,0.01,0.01,0.01,0.01]}
+### Running the Backend
+```powershell
+cd backend
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-`/explain` returns the same prediction fields plus `heatmap_data_url` and `overlay_data_url`: compact PNG `data:` URLs that the mobile `Image` component renders directly.
+### Backend API Endpoints
 
-## Operations
+- `GET /health`: Health check and class taxonomy status.
+- `POST /explain`: Generates Grad-CAM heatmap and overlay images.
+  - **Form Fields**:
+    - `file`: Image file (JPEG, PNG, or WebP up to 10 MB).
+    - `material`: `"silk"` or `"cotton"`.
+    - `class_index`: Target class index integer.
+  - **Returns**: JSON with prediction metadata, `heatmap_data_url`, and `overlay_data_url`.
 
-- The mobile model is bundled and loaded once per app session; image classification remains available without a network connection.
-- The backend model is loaded once at FastAPI startup. Limit a production worker to one TensorFlow model copy.
-- Uploads are capped at 10 MB and only JPEG, PNG, and WebP are accepted. The app retries one transient explanation request and shows user-readable errors for offline, timeout, invalid file, and server failure conditions.
-- Deploy the backend behind HTTPS, authentication, a reverse-proxy body-size limit, and explicit CORS origins. Do not retain or log uploaded images.
+---
 
-## Verification completed
+## Operational & Privacy Principles
 
-- Android production JavaScript bundle succeeds and contains `silk_model_v2_unknown.tflite`.
-- The supplied Keras model was inspected: input `224x224x3`, output `5` classes.
-- Backend prediction, EfficientNet Grad-CAM generation, heatmap normalization, and PNG overlay creation were run successfully against a local image.
-
-## Limits and future work
-
-This is a textile classification assistant, not authentication evidence. Before release, validate accuracy on representative real-world images, measure calibration, add authenticated API access and telemetry that excludes images, and add unit/device tests for pixel preprocessing and real handset inference.
+- **Offline-First**: All inferences (Material, Silk, Cotton) are computed strictly on-device using bundled TFLite models. No network request is made during image capture or standard prediction.
+- **Single-Pass Preprocessing**: Skia resizes and generates the float32 pixel buffer once per classification run.
+- **Opt-In Explainability**: The image is transmitted to the backend only when the user explicitly requests a visual Grad-CAM explanation.
+- **Zero Data Retention**: The backend processes the image in-memory for Grad-CAM tensor gradients and discards it immediately without saving or logging.

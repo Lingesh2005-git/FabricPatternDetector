@@ -19,7 +19,11 @@ def decode_image(contents: bytes, content_type: str | None) -> tuple[Image.Image
         resized = image.resize(IMAGE_SIZE, Image.Resampling.LANCZOS)
     except (UnidentifiedImageError, OSError, ValueError) as exc:
         raise HTTPException(422, "The uploaded file is not a valid image.") from exc
-    return display, np.expand_dims(np.asarray(resized, dtype=np.float32) / 255.0, axis=0)
+
+    # Returns original display PIL image and [1, 224, 224, 3] float32 image batch (0-255 range)
+    # matching the mobile client input for models with built-in Rescaling layers.
+    image_batch = np.expand_dims(np.asarray(resized, dtype=np.float32), axis=0)
+    return display, image_batch
 
 def png_data_url(image: Image.Image) -> str:
     buffer = io.BytesIO()

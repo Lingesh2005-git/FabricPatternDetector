@@ -1,43 +1,119 @@
 import { loadTensorflowModel } from 'react-native-fast-tflite';
-import { CLASS_NAMES, DISPLAY_NAMES } from '../config/labels';
+import {
+  MATERIAL_CLASSES,
+  MATERIAL_DISPLAY_NAMES,
+  SILK_CLASSES,
+  SILK_DISPLAY_NAMES,
+  COTTON_CLASSES,
+  COTTON_DISPLAY_NAMES,
+  CONFIDENCE_THRESHOLDS,
+  UNCERTAIN_MESSAGES,
+} from '../config/labels';
 import { imageUriToFloat32Buffer } from '../utils/image';
 
-let modelPromise;
+const MATERIAL_MODEL_ASSET = require('../../material_classifier.tflite');
+const SILK_MODEL_ASSET = require('../../silk_classifier.tflite');
+const COTTON_MODEL_ASSET = require('../../cotton_classifier.tflite');
 
-const MODEL_ASSET = require('../../silk_model_v2_unknown.tflite');
+let materialModelPromise;
+let silkModelPromise;
+let cottonModelPromise;
 
-export function loadModel() {
-modelPromise ??= loadTensorflowModel(MODEL_ASSET, []);
-return modelPromise;
+export function loadMaterialModel() {
+  materialModelPromise ??= loadTensorflowModel(MATERIAL_MODEL_ASSET, []);
+  return materialModelPromise;
 }
 
+export function loadSilkModel() {
+  silkModelPromise ??= loadTensorflowModel(SILK_MODEL_ASSET, []);
+  return silkModelPromise;
+}
+
+export function loadCottonModel() {
+  cottonModelPromise ??= loadTensorflowModel(COTTON_MODEL_ASSET, []);
+  return cottonModelPromise;
+}
+
+export function loadAllModels() {
+  return Promise.all([
+    loadMaterialModel(),
+    loadSilkModel(),
+    loadCottonModel(),
+  ]);
+}
+
+/**
+ * Executes a staged 3-model classification:
+ * 1. Single-pass Skia RGB preprocessing to Float32Array.
+ * 2. Stage 1: material_classifier.tflite -> Silk vs Cotton.
+ * 3. Stage 2: silk_classifier.tflite (if Silk) or cotton_classifier.tflite (if Cotton).
+ */
 export async function classifyImage(uri, base64) {
-const [model, input] = await Promise.all([
-loadModel(),
-imageUriToFloat32Buffer(uri, base64),
-]);
+  const [materialModel, inputBuffer] = await Promise.all([
+    loadMaterialModel(),
+    imageUriToFloat32Buffer(uri, base64),
+  ]);
 
-const [outputBuffer] = await model.run([input]);
+  // Stage 1: Material prediction
+  const [materialOutputBuffer] = await materialModel.run([inputBuffer]);
+  const materialScores = Array.from(new Float32Array(materialOutputBuffer));
+  const materialIndex = materialScores.indexOf(Math.max(...materialScores));
+  const material = MATERIAL_CLASSES[materialIndex] || 'silk';
+  const materialLabel = MATERIAL_DISPLAY_NAMES[material] || material;
+  const materialConfidence = materialScores[materialIndex] ?? 0;
 
-const scores = Array.from(
-new Float32Array(outputBuffer)
-);
+  // Stage 2: Subtype classification based on material
+  let subtypeModel;
+  let classes;
+  let displayNames;
+  let modelUsed;
 
-const classIndex = scores.indexOf(
-Math.max(...scores)
-);
+  if (material === 'silk') {
+    subtypeModel = await loadSilkModel();
+    classes = SILK_CLASSES;
+    displayNames = SILK_DISPLAY_NAMES;
+    modelUsed = 'silk_classifier';
+  } else {
+    subtypeModel = await loadCottonModel();
+    classes = COTTON_CLASSES;
+    displayNames = COTTON_DISPLAY_NAMES;
+    modelUsed = 'cotton_classifier';
+  }
 
-const className = CLASS_NAMES[classIndex];
+  // Run the second stage using the exact same preprocessed inputBuffer
+  const [subtypeOutputBuffer] = await subtypeModel.run([inputBuffer]);
+  const scores = Array.from(new Float32Array(subtypeOutputBuffer));
+  const classIndex = scores.indexOf(Math.max(...scores));
+  const className = classes[classIndex];
+  const label = displayNames[className] || className;
+  const confidence = scores[classIndex] ?? 0;
 
-const result = {
-classIndex,
-className,
-label: DISPLAY_NAMES[className],
-confidence: scores[classIndex],
-scores,
-};
+  const isMaterialUncertain = materialConfidence < CONFIDENCE_THRESHOLDS.material;
+  const isSubtypeUncertain = confidence < CONFIDENCE_THRESHOLDS.subtype;
+  const isUncertain = isMaterialUncertain || isSubtypeUncertain;
 
-console.log('TFLite result:', result);
+  let uncertaintyReason = null;
+  if (isMaterialUncertain) {
+    uncertaintyReason = UNCERTAIN_MESSAGES.material;
+  } else if (isSubtypeUncertain) {
+    uncertaintyReason = UNCERTAIN_MESSAGES.subtype;
+  }
 
-return result;
+  const result = {
+    material,
+    materialLabel,
+    materialConfidence,
+    materialScores,
+    classIndex,
+    className,
+    label,
+    confidence,
+    scores,
+    modelUsed,
+    isUncertain,
+    uncertaintyReason,
+  };
+
+  console.log('Staged TFLite classification result:', result);
+  return result;
 }

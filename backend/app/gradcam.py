@@ -3,7 +3,7 @@ import numpy as np
 import tensorflow as tf
 from PIL import Image
 
-def _last_conv_layer(model: tf.keras.Model) -> tf.keras.layers.Layer:
+def _last_conv_layer(model: tf.keras.Model) -> tuple[tf.keras.layers.Layer, tf.keras.Model, int]:
     candidates = []
     def visit(layer):
         if isinstance(layer, tf.keras.layers.Conv2D):
@@ -14,37 +14,52 @@ def _last_conv_layer(model: tf.keras.Model) -> tf.keras.layers.Layer:
     for layer in model.layers:
         visit(layer)
     if not candidates:
-        raise ValueError("Grad-CAM requires at least one Conv2D layer.")
-    return candidates[-1]
+        raise ValueError("Grad-CAM requires at least one Conv2D layer in the model.")
+    last_conv = candidates[-1]
 
-def make_gradcam_heatmap(model: tf.keras.Model, image_batch: np.ndarray, class_index: int) -> np.ndarray:
-    last_conv = _last_conv_layer(model)
-    # The EfficientNet backbone is nested inside the saved classifier. Rebuild the
-    # forward pass around its inner convolutional tensor so Keras 3 can trace it.
+    # The EfficientNet backbone is nested inside the classifier
     backbone = next(
         layer for layer in model.layers
         if isinstance(layer, tf.keras.Model) and last_conv in layer.layers
     )
     backbone_index = model.layers.index(backbone)
+    return last_conv, backbone, backbone_index
+
+def make_gradcam_heatmap(model: tf.keras.Model, image_batch: np.ndarray, class_index: int) -> np.ndarray:
+    last_conv, backbone, backbone_index = _last_conv_layer(model)
     feature_model = tf.keras.Model(backbone.input, last_conv.output)
     inputs = tf.convert_to_tensor(image_batch)
+
     with tf.GradientTape() as tape:
         features = inputs
         for layer in model.layers[1:backbone_index]:
             features = layer(features, training=False)
         conv_output = feature_model(features, training=False)
+        tape.watch(conv_output)
+
         predictions = conv_output
-        for layer in backbone.layers[backbone.layers.index(last_conv) + 1:]:
+        last_conv_idx = backbone.layers.index(last_conv)
+        for layer in backbone.layers[last_conv_idx + 1:]:
             predictions = layer(predictions, training=False)
         for layer in model.layers[backbone_index + 1:]:
             predictions = layer(predictions, training=False)
         loss = predictions[:, class_index]
+
     gradients = tape.gradient(loss, conv_output)
+    if gradients is None:
+        return np.zeros((7, 7), dtype=np.float32)
+
     weights = tf.reduce_mean(gradients, axis=(1, 2), keepdims=True)
     heatmap = tf.reduce_sum(weights * conv_output, axis=-1)[0]
     heatmap = tf.maximum(heatmap, 0)
     maximum = tf.reduce_max(heatmap)
-    return (heatmap / (maximum + tf.keras.backend.epsilon())).numpy()
+
+    if float(maximum) > 0:
+        heatmap = heatmap / (maximum + tf.keras.backend.epsilon())
+    else:
+        heatmap = tf.zeros_like(heatmap)
+
+    return heatmap.numpy()
 
 def create_visuals(original: Image.Image, heatmap: np.ndarray) -> tuple[Image.Image, Image.Image]:
     source = np.asarray(original.convert("RGB"))

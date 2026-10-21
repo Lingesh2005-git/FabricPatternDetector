@@ -1,12 +1,17 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Alert, Image, StyleSheet, Text, View, ScrollView } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import PrimaryButton from '../components/PrimaryButton';
-import { classifyImage, loadAllModels } from '../services/tflite';
+import { classifyImage, loadTextileGateModel } from '../services/tflite';
 
 export default function HomeScreen({ navigation }) {
   const [asset, setAsset] = useState();
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    // Keep one model instance ready for the first prediction.
+    loadTextileGateModel().catch(() => {});
+  }, []);
 
   const choose = async (camera) => {
     try {
@@ -42,7 +47,6 @@ export default function HomeScreen({ navigation }) {
     if (!asset) return;
     try {
       setLoading(true);
-      await loadAllModels();
       const prediction = await classifyImage(asset.uri, asset.base64);
       navigation.navigate('Prediction', { asset, prediction });
     } catch (e) {
@@ -56,7 +60,7 @@ export default function HomeScreen({ navigation }) {
     <ScrollView contentContainerStyle={styles.page}>
       <Text style={styles.title}>Silk & Cotton Classifier</Text>
       <Text style={styles.copy}>
-        Silk Vision identifies whether a fabric is silk or cotton, then predicts its specific textile category. Classification happens entirely offline on this device.
+        Silk Vision first checks whether an image contains textile, then identifies silk or cotton and predicts its specific textile category. Classification happens entirely offline on this device.
       </Text>
 
       {asset ? (

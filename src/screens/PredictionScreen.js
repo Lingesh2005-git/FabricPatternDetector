@@ -3,6 +3,27 @@ import PrimaryButton from '../components/PrimaryButton';
 
 export default function PredictionScreen({ navigation, route }) {
   const { asset, prediction } = route.params;
+  const textileProbability = typeof prediction?.textileProbability === 'number'
+    ? prediction.textileProbability
+    : 0;
+
+  if (prediction?.textileAccepted === false) {
+    return (
+      <ScrollView contentContainerStyle={styles.page}>
+        <Image source={{ uri: asset.uri }} style={styles.image} />
+        <Text style={styles.caption}>Textile Gate</Text>
+        <View style={styles.card}>
+          <View style={styles.levelHeader}>
+            <Text style={styles.levelTag}>STAGE 1 - TEXTILE CHECK</Text>
+            <Text style={styles.levelConfidence}>{(textileProbability * 100).toFixed(1)}%</Text>
+          </View>
+          <Text style={styles.levelTitle}>No textile detected</Text>
+          <Text style={styles.uncertainText}>{prediction.rejectionMessage}</Text>
+        </View>
+        <PrimaryButton title="Choose another image" onPress={() => navigation.goBack()} />
+      </ScrollView>
+    );
+  }
 
   const materialLabel = prediction?.materialLabel || (prediction?.material === 'cotton' ? 'Cotton' : 'Silk');
   const materialConfidence = typeof prediction?.materialConfidence === 'number'
@@ -23,12 +44,21 @@ export default function PredictionScreen({ navigation, route }) {
 
       <Text style={styles.caption}>Staged On-Device Result</Text>
 
-      {/* Two-Level Classification Result Card */}
+      {/* Textile gate and the existing two classification levels */}
       <View style={styles.card}>
+        <View style={styles.levelRow}>
+          <View style={styles.levelHeader}>
+            <Text style={styles.levelTag}>STAGE 1 - TEXTILE CHECK</Text>
+            <Text style={styles.levelConfidence}>{(textileProbability * 100).toFixed(1)}%</Text>
+          </View>
+          <Text style={styles.levelTitle}>Textile detected</Text>
+        </View>
+
+        <View style={styles.divider} />
         {/* Level 1: Material */}
         <View style={styles.levelRow}>
           <View style={styles.levelHeader}>
-            <Text style={styles.levelTag}>STAGE 1 • MATERIAL</Text>
+            <Text style={styles.levelTag}>STAGE 2 - MATERIAL</Text>
             <Text style={styles.levelConfidence}>
               {(materialConfidence * 100).toFixed(1)}%
             </Text>
@@ -40,10 +70,10 @@ export default function PredictionScreen({ navigation, route }) {
 
         <View style={styles.divider} />
 
-        {/* Level 2: Subtype */}
+        {/* Level 3: Subtype */}
         <View style={styles.levelRow}>
           <View style={styles.levelHeader}>
-            <Text style={styles.levelTag}>STAGE 2 • SUBTYPE CATEGORY</Text>
+            <Text style={styles.levelTag}>STAGE 3 - SUBTYPE CATEGORY</Text>
             <Text style={styles.levelConfidence}>
               {(subtypeConfidence * 100).toFixed(1)}%
             </Text>

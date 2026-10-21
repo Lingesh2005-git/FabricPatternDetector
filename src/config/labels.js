@@ -42,9 +42,13 @@ export const COTTON_DISPLAY_NAMES = {
 };
 
 export const CONFIDENCE_THRESHOLDS = {
+  textile: 0.30,
   material: 0.65,
   subtype: 0.65,
 };
+
+export const TEXTILE_REJECTION_MESSAGE =
+  'This image does not appear to contain a textile or fabric. Please upload a valid fabric image.';
 
 export const UNCERTAIN_MESSAGES = {
   material: 'Uncertain material type (low confidence)',

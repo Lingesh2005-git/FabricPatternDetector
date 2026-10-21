@@ -7,10 +7,12 @@ import {
   COTTON_CLASSES,
   COTTON_DISPLAY_NAMES,
   CONFIDENCE_THRESHOLDS,
+  TEXTILE_REJECTION_MESSAGE,
   UNCERTAIN_MESSAGES,
 } from '../config/labels';
 import { imageUriToFloat32Buffer } from '../utils/image';
 
+const TEXTILE_GATE_MODEL_ASSET = require('../../textile_gate_efficientnetb0_v1.tflite');
 const MATERIAL_MODEL_ASSET = require('../../material_classifier.tflite');
 const SILK_MODEL_ASSET = require('../../silk_classifier.tflite');
 const COTTON_MODEL_ASSET = require('../../cotton_classifier.tflite');
@@ -18,41 +20,59 @@ const COTTON_MODEL_ASSET = require('../../cotton_classifier.tflite');
 let materialModelPromise;
 let silkModelPromise;
 let cottonModelPromise;
+let textileGateModelPromise;
+
+export function loadTextileGateModel() {
+  textileGateModelPromise ??= loadTensorflowModel(TEXTILE_GATE_MODEL_ASSET, []).catch((error) => {
+    throw new Error(`Unable to load the Textile Gate model. Confirm the bundled TFLite asset is available. ${error.message || ''}`.trim());
+  });
+  return textileGateModelPromise;
+}
 
 export function loadMaterialModel() {
-  materialModelPromise ??= loadTensorflowModel(MATERIAL_MODEL_ASSET, []);
+  materialModelPromise ??= loadTensorflowModel(MATERIAL_MODEL_ASSET, []).catch((error) => {
+    throw new Error(`Unable to load the material classifier model. ${error.message || ''}`.trim());
+  });
   return materialModelPromise;
 }
 
 export function loadSilkModel() {
-  silkModelPromise ??= loadTensorflowModel(SILK_MODEL_ASSET, []);
+  silkModelPromise ??= loadTensorflowModel(SILK_MODEL_ASSET, []).catch((error) => {
+    throw new Error(`Unable to load the silk subtype model. ${error.message || ''}`.trim());
+  });
   return silkModelPromise;
 }
 
 export function loadCottonModel() {
-  cottonModelPromise ??= loadTensorflowModel(COTTON_MODEL_ASSET, []);
+  cottonModelPromise ??= loadTensorflowModel(COTTON_MODEL_ASSET, []).catch((error) => {
+    throw new Error(`Unable to load the cotton subtype model. ${error.message || ''}`.trim());
+  });
   return cottonModelPromise;
 }
 
-export function loadAllModels() {
-  return Promise.all([
-    loadMaterialModel(),
-    loadSilkModel(),
-    loadCottonModel(),
-  ]);
-}
-
 /**
- * Executes a staged 3-model classification:
- * 1. Single-pass Skia RGB preprocessing to Float32Array.
- * 2. Stage 1: material_classifier.tflite -> Silk vs Cotton.
- * 3. Stage 2: silk_classifier.tflite (if Silk) or cotton_classifier.tflite (if Cotton).
+ * Runs the textile gate before the existing material and subtype classifiers.
  */
 export async function classifyImage(uri, base64) {
-  const [materialModel, inputBuffer] = await Promise.all([
-    loadMaterialModel(),
-    imageUriToFloat32Buffer(uri, base64),
-  ]);
+  const inputBuffer = imageUriToFloat32Buffer(uri, base64);
+  const textileGateModel = await loadTextileGateModel();
+  const [textileGateOutputBuffer] = await textileGateModel.run([inputBuffer]);
+  const textileProbability = Array.from(new Float32Array(textileGateOutputBuffer))[0];
+  if (!Number.isFinite(textileProbability) || textileProbability < 0 || textileProbability > 1) {
+    throw new Error('The textile gate returned an invalid probability. Please try another image.');
+  }
+
+  const textileAccepted = textileProbability >= CONFIDENCE_THRESHOLDS.textile;
+  if (!textileAccepted) {
+    return {
+      textileAccepted,
+      textileProbability,
+      textileThreshold: CONFIDENCE_THRESHOLDS.textile,
+      rejectionMessage: TEXTILE_REJECTION_MESSAGE,
+    };
+  }
+
+  const materialModel = await loadMaterialModel();
 
   // Stage 1: Material prediction
   const [materialOutputBuffer] = await materialModel.run([inputBuffer]);
@@ -100,6 +120,9 @@ export async function classifyImage(uri, base64) {
   }
 
   const result = {
+    textileAccepted,
+    textileProbability,
+    textileThreshold: CONFIDENCE_THRESHOLDS.textile,
     material,
     materialLabel,
     materialConfidence,

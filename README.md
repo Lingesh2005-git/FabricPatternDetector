@@ -1,6 +1,6 @@
 # Silk Vision
 
-An Expo React Native mobile application for offline textile classification using a staged 3-model TensorFlow Lite pipeline, paired with an opt-in FastAPI Grad-CAM explainability service.
+An Expo React Native mobile application for offline textile classification using a staged TensorFlow Lite pipeline, paired with an opt-in FastAPI Grad-CAM explainability service.
 
 ---
 
@@ -13,13 +13,19 @@ Picker / Camera Image
 Single-pass Skia RGB Preprocessing (1 x 224 x 224 x 3 float32 buffer)
         │
         ▼
-[Stage 1: Offline TFLite] material_classifier.tflite
+[Stage 1: Offline TFLite] textile_gate_efficientnetb0_v1.tflite
+        |
+        +-- probability < 0.30 --> Rejection message; stop inference
+        |
+        +-- probability >= 0.30 --> Continue
+        v
+[Stage 2: Offline TFLite] material_classifier.tflite
         │
         ├─────────────────────────────┬─────────────────────────────┐
         ▼                             ▼                             ▼
    Silk Branch                   Cotton Branch               Low Confidence
         │                             │                             │
-[Stage 2: Offline TFLite]     [Stage 2: Offline TFLite]             ▼
+[Stage 3: Offline TFLite]     [Stage 3: Offline TFLite]             ▼
   silk_classifier.tflite        cotton_classifier.tflite      Uncertain Notice
         │                             │                      (assistive view)
         ▼                             ▼
@@ -30,7 +36,7 @@ Final Silk Subtype             Final Cotton Subtype
                        │
                        ▼
              Prediction Result Screen
-  (Shows Material Level + Subtype Classification Level)
+  (Shows Textile Gate + Material + Subtype Results)
                        │
             [User taps "Generate Grad-CAM"]
                        │
@@ -46,13 +52,19 @@ Final Silk Subtype             Final Cotton Subtype
 
 ## Model Pipeline & Classes
 
-### 1. Material Classifier (`material_classifier.tflite`)
+### 1. Textile Gate (`textile_gate_efficientnetb0_v1.tflite`)
+- **Input**: `1 x 224 x 224 x 3` float32 RGB pixels in the `0-255` range.
+- **Output**: One sigmoid probability for TEXTILE.
+- **Decision threshold**: `0.30`, configured in `src/config/labels.js` as `CONFIDENCE_THRESHOLDS.textile`.
+- Images below the threshold stop here. Accepted images continue to the existing classifiers.
+
+### 2. Material Classifier (`material_classifier.tflite`)
 - **Input**: `1 x 224 x 224 x 3` (float32 RGB).
 - **Output**: 2 classes `[cotton, silk]`.
 - Determines whether the textile fabric is Silk or Cotton.
 
-### 2. Silk Classifier (`silk_classifier.tflite`)
-- **Execution**: Triggered when Stage 1 predicts Silk.
+### 3. Silk Classifier (`silk_classifier.tflite`)
+- **Execution**: Triggered when Stage 2 predicts Silk.
 - **Output**: 6 classes:
   1. Banarasi Silk (`banarasi_silk`)
   2. Chanderi Silk (`chanderi_silk`)
@@ -61,8 +73,8 @@ Final Silk Subtype             Final Cotton Subtype
   5. Mysore Silk (`mysore_silk`)
   6. Pochampally Silk (`pochampally_silk`)
 
-### 3. Cotton Classifier (`cotton_classifier.tflite`)
-- **Execution**: Triggered when Stage 1 predicts Cotton.
+### 4. Cotton Classifier (`cotton_classifier.tflite`)
+- **Execution**: Triggered when Stage 2 predicts Cotton.
 - **Output**: 5 classes:
   1. Cotton (Fabric) (`cotton_fabric`)
   2. Khadi (`khadi`)
@@ -130,7 +142,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
 ## Operational & Privacy Principles
 
-- **Offline-First**: All inferences (Material, Silk, Cotton) are computed strictly on-device using bundled TFLite models. No network request is made during image capture or standard prediction.
+- **Offline-First**: All inferences (Textile Gate, Material, Silk, Cotton) are computed strictly on-device using bundled TFLite models. No network request is made during image capture or standard prediction.
 - **Single-Pass Preprocessing**: Skia resizes and generates the float32 pixel buffer once per classification run.
 - **Opt-In Explainability**: The image is transmitted to the backend only when the user explicitly requests a visual Grad-CAM explanation.
 - **Zero Data Retention**: The backend processes the image in-memory for Grad-CAM tensor gradients and discards it immediately without saving or logging.

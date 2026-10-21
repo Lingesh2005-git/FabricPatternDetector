@@ -2,7 +2,7 @@ import axios from 'axios';
 import NetInfo from '@react-native-community/netinfo';
 
 // Use the LAN IP of the computer running FastAPI when testing on a physical device.
-const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://192.168.0.6:8000';
+const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://192.168.0.4:8000';
 const client = axios.create({ baseURL: API_URL, timeout: 30000 });
 
 export async function generateExplanation(asset, material, classIndex) {

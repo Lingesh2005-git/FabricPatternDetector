@@ -1,148 +1,360 @@
-# Silk Vision
+# FabricIQ
 
-An Expo React Native mobile application for offline textile classification using a staged TensorFlow Lite pipeline, paired with an opt-in FastAPI Grad-CAM explainability service.
+An Expo React Native mobile application for intelligent textile classification using a multi-stage, offline TensorFlow Lite inference pipeline, with an optional FastAPI-based Grad-CAM explainability service.
+
+## Project Overview
+
+FabricIQ is designed to identify textile materials and classify their subtypes through a staged AI-powered classification system.
+
+The application follows a hierarchical classification approach:
+
+1. **Textile Classification:** Determines whether the uploaded or captured image contains a textile or a non-textile object.
+2. **Material Classification:** If the image is identified as a textile, determines whether the material is Cotton or Silk.
+3. **Subtype Classification:** Depending on the material prediction, the application activates the corresponding Silk or Cotton classifier to identify the specific textile category.
+4. **Prediction Results:** Displays the classification results, including the textile verification, material prediction, and corresponding subtype.
+
+All standard classification stages run locally on the device using TensorFlow Lite models, allowing FabricIQ to operate without an internet connection.
+
+An optional Grad-CAM explainability feature is also implemented as a separate FastAPI backend service. It is currently kept inactive in the deployed application while its deployment and integration are being worked on.
 
 ---
 
 ## Architecture & Inference Flow
 
 ```text
-Picker / Camera Image
-        │
-        ▼
-Single-pass Skia RGB Preprocessing (1 x 224 x 224 x 3 float32 buffer)
-        │
-        ▼
-[Stage 1: Offline TFLite] textile_gate_efficientnetb0_v1.tflite
-        |
-        +-- probability < 0.30 --> Rejection message; stop inference
-        |
-        +-- probability >= 0.30 --> Continue
-        v
-[Stage 2: Offline TFLite] material_classifier.tflite
-        │
-        ├─────────────────────────────┬─────────────────────────────┐
-        ▼                             ▼                             ▼
-   Silk Branch                   Cotton Branch               Low Confidence
-        │                             │                             │
-[Stage 3: Offline TFLite]     [Stage 3: Offline TFLite]             ▼
-  silk_classifier.tflite        cotton_classifier.tflite      Uncertain Notice
-        │                             │                      (assistive view)
-        ▼                             ▼
-Final Silk Subtype             Final Cotton Subtype
-  (e.g., Banarasi Silk)          (e.g., Khadi)
-        │                             │
-        └──────────────┬──────────────┘
-                       │
-                       ▼
-             Prediction Result Screen
-  (Shows Textile Gate + Material + Subtype Results)
-                       │
-            [User taps "Generate Grad-CAM"]
-                       │
-                       ▼
-        FastAPI Backend Service (`POST /explain`)
-  (Runs Grad-CAM against matching Keras model: best_silk_stage2.keras / best_cotton_stage1.keras)
-                       │
-                       ▼
-             PNG Heatmap & Overlay URLs
+             Picker / Camera Image
+                       |
+                       v
+          Single-Pass Skia Preprocessing
+             (1 x 224 x 224 x 3)
+                       |
+                       v
+       [Stage 1: Textile Classifier]
+       textile_gate_efficientnetb0_v1.tflite
+                       |
+              Is it a textile?
+                       |
+              +--------+--------+
+              |                 |
+           NO / <0.30         YES / >=0.30
+              |                 |
+              v                 v
+       Rejection Message   [Stage 2: Material
+         Stop Pipeline       Classifier]
+                            material_classifier.tflite
+                                  |
+                       +----------+----------+
+                       |                     |
+                       v                     v
+                   SILK                   COTTON
+                       |                     |
+                       v                     v
+              [Stage 3: Silk]       [Stage 3: Cotton]
+              silk_classifier       cotton_classifier
+                  .tflite                .tflite
+                       |                     |
+                       v                     v
+                6 Silk Classes          5 Cotton Classes
+                       |                     |
+                       +----------+----------+
+                                  |
+                                  v
+                         Prediction Result
+                                  |
+                   +--------------+--------------+
+                   |                             |
+                   v                             v
+             Display Results             Optional Grad-CAM
+                                             (Opt-in)
+                                                  |
+                                                  v
+                                        FastAPI Backend
+                                           POST /explain
+                                                  |
+                                                  v
+                                         Heatmap & Overlay
 ```
 
 ---
 
-## Model Pipeline & Classes
+## Model Pipeline & Classification Details
 
-### 1. Textile Gate (`textile_gate_efficientnetb0_v1.tflite`)
-- **Input**: `1 x 224 x 224 x 3` float32 RGB pixels in the `0-255` range.
-- **Output**: One sigmoid probability for TEXTILE.
-- **Decision threshold**: `0.30`, configured in `src/config/labels.js` as `CONFIDENCE_THRESHOLDS.textile`.
-- Images below the threshold stop here. Accepted images continue to the existing classifiers.
+### 1. Textile Classifier – Initial Verification
 
-### 2. Material Classifier (`material_classifier.tflite`)
-- **Input**: `1 x 224 x 224 x 3` (float32 RGB).
-- **Output**: 2 classes `[cotton, silk]`.
-- Determines whether the textile fabric is Silk or Cotton.
+**Model:** `textile_gate_efficientnetb0_v1.tflite`
 
-### 3. Silk Classifier (`silk_classifier.tflite`)
-- **Execution**: Triggered when Stage 2 predicts Silk.
-- **Output**: 6 classes:
-  1. Banarasi Silk (`banarasi_silk`)
-  2. Chanderi Silk (`chanderi_silk`)
-  3. Kanjeevaram Silk (`kanjeevaram_silk`)
-  4. Muga Silk (`muga_silk`)
-  5. Mysore Silk (`mysore_silk`)
-  6. Pochampally Silk (`pochampally_silk`)
+This is the initial classification stage of FabricIQ.
 
-### 4. Cotton Classifier (`cotton_classifier.tflite`)
-- **Execution**: Triggered when Stage 2 predicts Cotton.
-- **Output**: 5 classes:
-  1. Cotton (Fabric) (`cotton_fabric`)
-  2. Khadi (`khadi`)
-  3. Ikat (`ikat`)
-  4. Cotton Sarees (`cotton_sarees`)
-  5. Handloom (`handloom`)
+Before attempting to identify the material or subtype, the application checks whether the input image contains a textile.
+
+- **Input:** `1 x 224 x 224 x 3` float32 RGB pixels.
+- **Output:** One sigmoid probability representing the likelihood that the image contains a textile.
+- **Decision threshold:** `0.30`.
+- **Configuration:** `src/config/labels.js`, under `CONFIDENCE_THRESHOLDS.textile`.
+
+**Decision logic:**
+- Probability below 0.30: The image is rejected as a non-textile or insufficiently textile-like image, and the classification pipeline stops.
+- Probability equal to or above 0.30: The image is accepted and passed to the Material Classifier.
+
+This stage helps prevent irrelevant images from proceeding through the textile classification pipeline.
+
+### 2. Material Classifier – Silk or Cotton
+
+**Model:** `material_classifier.tflite`
+
+Once an image passes the Textile Classifier, the Material Classifier determines the material category.
+
+- **Input:** `1 x 224 x 224 x 3` float32 RGB pixels.
+- **Output:** Two classes:
+  - Cotton (`cotton`)
+  - Silk (`silk`)
+
+Based on the predicted material, the application selects the corresponding subtype classifier.
+
+### 3. Silk Subtype Classifier
+
+**Model:** `silk_classifier.tflite`
+
+This model is activated when the Material Classifier predicts Silk.
+
+It identifies the specific silk variety among six categories:
+
+1. Banarasi Silk (`banarasi_silk`)
+2. Chanderi Silk (`chanderi_silk`)
+3. Kanjeevaram Silk (`kanjeevaram_silk`)
+4. Muga Silk (`muga_silk`)
+5. Mysore Silk (`mysore_silk`)
+6. Pochampally Silk (`pochampally_silk`)
+
+The predicted silk subtype is displayed on the Prediction Result Screen.
+
+### 4. Cotton Subtype Classifier
+
+**Model:** `cotton_classifier.tflite`
+
+This model is activated when the Material Classifier predicts Cotton.
+
+It identifies the specific cotton category among five classes:
+
+1. Cotton Fabric (`cotton_fabric`)
+2. Khadi (`khadi`)
+3. Ikat (`ikat`)
+4. Cotton Sarees (`cotton_sarees`)
+5. Handloom (`handloom`)
+
+The predicted cotton subtype is displayed on the Prediction Result Screen.
 
 ---
 
-## Mobile Setup & Development
+## Image Processing & Inference
 
-### Prerequisites
+### Single-Pass Preprocessing
+
+FabricIQ uses Skia for image preprocessing.
+
+The image is resized and converted into a float32 RGB pixel buffer with dimensions:
+
+`1 x 224 x 224 x 3`
+
+The same preprocessed buffer is reused across the classification stages, avoiding unnecessary repeated image preprocessing.
+
+### Offline Inference
+
+The following models are executed directly on the mobile device:
+
+- Textile Classifier
+- Material Classifier
+- Silk Subtype Classifier
+- Cotton Subtype Classifier
+
+The application uses TensorFlow Lite through `react-native-fast-tflite`.
+
+No backend request is required for normal image classification.
+
+---
+
+## Application Development & Deployment
+
+FabricIQ is developed using Expo and React Native.
+
+### Technologies Used
+
+- React Native
+- Expo
+- TensorFlow Lite
+- `react-native-fast-tflite`
+- React Native Skia
+- FastAPI (optional Grad-CAM backend)
+- Python and TensorFlow/Keras
+
+### Mobile Development Setup
+
+**Prerequisites:**
 - Node.js (v18+)
-- Android Studio / Xcode for native development builds (since `react-native-fast-tflite` is a native module)
+- Android Studio for Android native development
+- Xcode for iOS native development
+- Expo development build
+
+Install dependencies:
 
 ```powershell
-# Install dependencies
 npm install
+```
 
-# Generate native project files if needed
+Generate native project files when required:
+
+```powershell
 npx expo prebuild --clean
+```
 
-# Run on Android development build
+Run on Android:
+
+```powershell
 npx expo run:android
 ```
 
-### Physical Device Backend Connection
-To test Grad-CAM on a physical device, supply your computer's local network IP in `EXPO_PUBLIC_API_URL` prior to starting the Expo development client:
+### Android Deployment
 
-```powershell
-$env:EXPO_PUBLIC_API_URL="http://192.168.1.10:8000"
-npx expo start --dev-client
-```
+The Android application has been successfully built using Expo Application Services (EAS).
 
-*Note: Android Emulators automatically resolve to `http://10.0.2.2:8000`.*
+The project also uses GitHub for source-code management and release distribution.
+
+Repository:
+
+https://github.com/Lingesh2005-git/FabricPatternDetector
+
+The application is being developed with Android deployment as the current priority, with the possibility of iOS support in the future.
 
 ---
 
-## Grad-CAM Backend Service
+## Optional Grad-CAM Explainability Service
 
-The optional Grad-CAM backend (`backend/`) dynamically dispatches requests to the corresponding Keras models:
+FabricIQ includes an additional Grad-CAM implementation intended to provide visual explanations of model predictions.
+
+Grad-CAM generates a heatmap highlighting image regions that contribute to a model's prediction.
+
+Unlike standard classification, which runs entirely offline, Grad-CAM is designed as an opt-in feature that uses a separate FastAPI backend.
+
+### Backend Models
+
+The backend dynamically selects the corresponding Keras model:
+
 - Silk: `best_silk_stage2.keras`
 - Cotton: `best_cotton_stage1.keras`
 
-### Running the Backend
+### Backend API
+
+**Health Check:**
+
+`GET /health`
+
+Checks backend availability and class taxonomy.
+
+**Grad-CAM Generation:**
+
+`POST /explain`
+
+Accepts:
+- `file`: Input image (JPEG, PNG, or WebP, up to 10 MB).
+- `material`: `silk` or `cotton`.
+- `class_index`: Target class index.
+
+Returns:
+- Prediction metadata.
+- `heatmap_data_url`.
+- `overlay_data_url`.
+
+### Backend Execution
+
 ```powershell
 cd backend
+
 python -m venv .venv
+
 .\.venv\Scripts\Activate.ps1
+
 pip install -r requirements.txt
+
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-### Backend API Endpoints
+### Physical Device Connection
 
-- `GET /health`: Health check and class taxonomy status.
-- `POST /explain`: Generates Grad-CAM heatmap and overlay images.
-  - **Form Fields**:
-    - `file`: Image file (JPEG, PNG, or WebP up to 10 MB).
-    - `material`: `"silk"` or `"cotton"`.
-    - `class_index`: Target class index integer.
-  - **Returns**: JSON with prediction metadata, `heatmap_data_url`, and `overlay_data_url`.
+For local development and testing:
+
+```powershell
+$env:EXPO_PUBLIC_API_URL="http://192.168.1.10:8000"
+
+npx expo start --dev-client
+```
+
+Replace the IP address with the development computer's local network IP.
+
+For Android emulators, use:
+
+`http://10.0.2.2:8000`
+
+**Current status:** The Grad-CAM implementation and its supporting files are preserved in the project repository. The feature is currently commented out of the active application because the initial backend deployment encountered memory limitations when loading the Keras models. Further backend deployment and integration work remains.
 
 ---
 
 ## Operational & Privacy Principles
 
-- **Offline-First**: All inferences (Textile Gate, Material, Silk, Cotton) are computed strictly on-device using bundled TFLite models. No network request is made during image capture or standard prediction.
-- **Single-Pass Preprocessing**: Skia resizes and generates the float32 pixel buffer once per classification run.
-- **Opt-In Explainability**: The image is transmitted to the backend only when the user explicitly requests a visual Grad-CAM explanation.
-- **Zero Data Retention**: The backend processes the image in-memory for Grad-CAM tensor gradients and discards it immediately without saving or logging.
+### Offline-First Classification
+
+All four classification models run locally on the mobile device. Internet connectivity is not required for the standard prediction workflow.
+
+### Hierarchical Classification
+
+The application follows a sequential classification process:
+
+Textile Verification → Material Identification → Subtype Classification.
+
+This ensures that only images accepted by the initial Textile Classifier proceed to the subsequent classification stages.
+
+### Single-Pass Image Processing
+
+Skia preprocessing generates one RGB float32 image buffer, which is reused by the classification pipeline.
+
+### Opt-In Explainability
+
+The image is intended to be transmitted to the Grad-CAM backend only when the user explicitly requests an explanation.
+
+### Data Handling
+
+The intended backend design processes images in memory without retaining uploaded images. This is a design objective that should be verified against actual logging, storage and deployment configurations before claiming zero data retention.
+
+---
+
+## Current Project Status & Completed Work
+
+The following summarizes the implementation completed so far:
+
+| Component | Status |
+|---|---|
+| Expo React Native application | Implemented |
+| Textile Classifier | Implemented |
+| Material Classifier (Silk/Cotton) | Implemented |
+| Silk Subtype Classifier (6 classes) | Implemented |
+| Cotton Subtype Classifier (5 classes) | Implemented |
+| TensorFlow Lite model integration | Implemented |
+| On-device inference pipeline | Implemented |
+| Skia image preprocessing | Implemented |
+| Prediction result screen | Implemented |
+| Android EAS build | Successfully built |
+| GitHub repository and source management | Set up |
+| Grad-CAM algorithm and backend implementation | Preserved |
+| Grad-CAM production deployment and integration | Pending |
+
+## Future Enhancements
+
+1. Complete Grad-CAM backend deployment.
+2. Integrate the optional Grad-CAM feature into the active mobile application.
+3. Investigate on-device Grad-CAM using TensorFlow Lite to reduce backend dependency.
+4. Improve confidence handling and rejection mechanisms across classification stages.
+5. Complete iOS development and deployment.
+6. Improve application performance and user experience.
+
+---
+
+**FabricIQ – An Offline-First AI-Powered Textile Classification and Analysis Application.**

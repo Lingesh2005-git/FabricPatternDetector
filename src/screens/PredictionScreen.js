@@ -101,7 +101,7 @@ export default function PredictionScreen({ navigation, route }) {
         </Text>
       </View>
 
-      <PrimaryButton
+      {/*<PrimaryButton
         title="Generate Grad-CAM explanation"
         onPress={() =>
           navigation.navigate('Explanation', {
@@ -109,7 +109,7 @@ export default function PredictionScreen({ navigation, route }) {
             prediction,
           })
         }
-      />
+      />*/}
     </ScrollView>
   );
 }

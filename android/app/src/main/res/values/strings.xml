@@ -1,3 +1,4 @@
 <resources>
-  <string name="app_name">silk_saree</string>
+  <string name="app_name">FabricIQ</string>
+  <string name="expo_runtime_version">1.0.0</string>
 </resources>
